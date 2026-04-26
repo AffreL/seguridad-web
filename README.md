@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-# seguridad-web
-=======
 # Demo de Donaciones Vulnerable
 
 Aplicacion FastAPI educativa que renderiza HTML directo, pensada para practicar pruebas de vulnerabilidades web en un entorno local.
@@ -41,4 +38,3 @@ Usuario administrador inicial:
 - Password: `admin`
 
 > No usar en produccion. La app evita protecciones habituales a proposito para que sea facil inspeccionar y probar.
->>>>>>> d9694e0 (primer commit)
