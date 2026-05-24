@@ -1,0 +1,8 @@
+2026-05-18 09:12:04 INFO  session created user=admin ip=127.0.0.1
+2026-05-18 09:12:11 INFO  GET /admin user=admin
+2026-05-18 09:14:02 INFO  GET /petitions/2 user=admin
+2026-05-18 09:15:33 INFO  comment posted petition_id=2 user=sofia
+2026-05-18 09:22:18 INFO  donation recorded petition_id=2 amount=18000 user=camila
+2026-05-18 09:31:44 INFO  GET /petitions/1 user=martin
+2026-05-18 10:05:09 INFO  wallet load user=diego amount=5000 via mock mercadopago
+2026-05-18 10:48:27 INFO  GET /admin/logs/download file=activity.log user=admin

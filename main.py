@@ -5,16 +5,18 @@ import sqlite3
 from typing import Optional
 
 from fastapi import Cookie, FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
+LOGS_DIR = BASE_DIR / "var" / "www" / "app" / "logs"
 DB_PATH = BASE_DIR / "donaciones.db"
-APP_DEPOSIT_ALIAS = "DONACIONES.APP"
+MOCK_MP_URL = "/mock/mercadopago"
 
 UPLOAD_DIR.mkdir(exist_ok=True)
+LOGS_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="Demo Donaciones Vulnerable")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
@@ -52,6 +54,7 @@ def init_db() -> None:
                 title TEXT NOT NULL,
                 description TEXT NOT NULL,
                 bank_alias TEXT NOT NULL,
+                is_reviewed INTEGER NOT NULL DEFAULT 0,
                 photo_path TEXT,
                 goal_amount REAL NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -110,9 +113,12 @@ def init_db() -> None:
             );
             """
         )
-        columns = [row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()]
-        if "balance" not in columns:
+        user_columns = [row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()]
+        if "balance" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN balance REAL NOT NULL DEFAULT 0")
+        petition_columns = [row["name"] for row in conn.execute("PRAGMA table_info(petitions)").fetchall()]
+        if "is_reviewed" not in petition_columns:
+            conn.execute("ALTER TABLE petitions ADD COLUMN is_reviewed INTEGER NOT NULL DEFAULT 0")
         admin = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()
         if not admin:
             conn.execute(
@@ -266,6 +272,12 @@ def require_user(session: Optional[str]) -> Optional[sqlite3.Row]:
     return current_user(session)
 
 
+def public_wallet_detail(detail: Optional[str]) -> str:
+    if not detail:
+        return ""
+    return detail.replace("DONACIONES.APP", "Mercado Pago mock").replace("alias Mercado Pago mock", "Mercado Pago mock")
+
+
 @app.on_event("startup")
 def startup() -> None:
     init_db()
@@ -398,16 +410,14 @@ def profile(session: Optional[str] = Cookie(default=None)) -> HTMLResponse:
         <h1>Mi perfil</h1>
         <div class="stats">
             <div class="metric"><strong>${user["balance"]:.2f}</strong><span>Saldo disponible</span></div>
-            <div class="metric"><strong>{APP_DEPOSIT_ALIAS}</strong><span>Alias de carga de la app</span></div>
         </div>
     </section>
     <section class="grid" style="margin-top: 18px;">
-        <form class="card" method="post" action="/wallet/deposit">
+        <form class="card" method="get" action="{MOCK_MP_URL}/wallet">
             <h2>Cargar saldo</h2>
-            <p class="muted">Para esta demo, ingresar el alias de la app acredita saldo inmediatamente.</p>
-            <input name="app_alias" value="{APP_DEPOSIT_ALIAS}" placeholder="Alias de la app" required>
+            <p class="muted">Mercado Pago esta mockeado para esta demo. El pago aprobado acredita saldo en tu perfil.</p>
             <input name="amount" type="number" min="1" step="0.01" placeholder="Monto" required>
-            <button>Cargar saldo</button>
+            <button>Ir a Mercado Pago</button>
         </form>
         <form class="card" method="post" action="/wallet/withdraw">
             <h2>Retirar saldo</h2>
@@ -420,7 +430,7 @@ def profile(session: Optional[str] = Cookie(default=None)) -> HTMLResponse:
         <h2>Movimientos</h2>
         <table>
             <tr><th>Fecha</th><th>Tipo</th><th>Monto</th><th>Detalle</th></tr>
-            {''.join(f'<tr><td>{m["created_at"]}</td><td>{m["movement_type"]}</td><td>${m["amount"]:.2f}</td><td>{m["detail"] or ""}</td></tr>' for m in movements) or '<tr><td colspan="4" class="muted">Todavia no hay movimientos.</td></tr>'}
+            {''.join(f'<tr><td>{m["created_at"]}</td><td>{m["movement_type"]}</td><td>${m["amount"]:.2f}</td><td>{public_wallet_detail(m["detail"])}</td></tr>' for m in movements) or '<tr><td colspan="4" class="muted">Todavia no hay movimientos.</td></tr>'}
         </table>
     </section>
     <section class="card" style="margin-top: 18px;">
@@ -432,28 +442,6 @@ def profile(session: Optional[str] = Cookie(default=None)) -> HTMLResponse:
     </section>
     """
     return layout("Perfil", body, user)
-
-
-@app.post("/wallet/deposit")
-def deposit(
-    session: Optional[str] = Cookie(default=None),
-    app_alias: str = Form(...),
-    amount: float = Form(...),
-) -> RedirectResponse:
-    user = require_user(session)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
-    if amount <= 0:
-        return RedirectResponse("/profile", status_code=303)
-    if app_alias != APP_DEPOSIT_ALIAS:
-        return RedirectResponse("/profile", status_code=303)
-    with db() as conn:
-        conn.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (amount, user["id"]))
-        conn.execute(
-            "INSERT INTO wallet_movements (user_id, movement_type, amount, detail, created_at) VALUES (?, ?, ?, ?, ?)",
-            (user["id"], "carga", amount, f"Carga desde alias {APP_DEPOSIT_ALIAS}", now()),
-        )
-    return RedirectResponse("/profile", status_code=303)
 
 
 @app.post("/wallet/withdraw")
@@ -476,6 +464,52 @@ def withdraw(
         conn.execute(
             "INSERT INTO wallet_movements (user_id, movement_type, amount, detail, created_at) VALUES (?, ?, ?, ?, ?)",
             (user["id"], "retiro", -amount, f"Retiro hacia {destination_alias}", now()),
+        )
+    return RedirectResponse("/profile", status_code=303)
+
+
+@app.get("/mock/mercadopago/wallet", response_class=HTMLResponse)
+def mock_mp_wallet(
+    amount: float,
+    session: Optional[str] = Cookie(default=None),
+) -> HTMLResponse:
+    user = require_user(session)
+    if not user:
+        return layout("Mercado Pago", '<section class="card"><p>Necesitas entrar para cargar saldo.</p></section>')
+    if amount <= 0:
+        return layout("Mercado Pago", '<section class="card"><p>Monto invalido.</p></section>', user)
+    body = f"""
+    <section class="card">
+        <h1>Mercado Pago</h1>
+        <p class="muted">Checkout simulado para cargar saldo en Donaciones Comunitarias.</p>
+        <div class="stats">
+            <div class="metric"><strong>${amount:.2f}</strong><span>Total a pagar</span></div>
+        </div>
+        <form method="post" action="/mock/mercadopago/wallet/pay" style="margin-top: 18px;">
+            <input type="hidden" name="amount" value="{amount}">
+            <button>Pagar con Mercado Pago</button>
+            <a class="button-link" href="/profile">Cancelar</a>
+        </form>
+    </section>
+    """
+    return layout("Mercado Pago", body, user)
+
+
+@app.post("/mock/mercadopago/wallet/pay")
+def mock_mp_wallet_pay(
+    amount: float = Form(...),
+    session: Optional[str] = Cookie(default=None),
+) -> RedirectResponse:
+    user = require_user(session)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if amount <= 0:
+        return RedirectResponse("/profile", status_code=303)
+    with db() as conn:
+        conn.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (amount, user["id"]))
+        conn.execute(
+            "INSERT INTO wallet_movements (user_id, movement_type, amount, detail, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user["id"], "carga", amount, "Carga aprobada en Mercado Pago mock", now()),
         )
     return RedirectResponse("/profile", status_code=303)
 
@@ -569,12 +603,13 @@ def petition_detail(petition_id: int, session: Optional[str] = Cookie(default=No
                 <input name="signer_name" placeholder="Nombre para mostrar" value="{user["username"]}" required>
                 <button>Firmar peticion</button>
             </form>
-            <form class="card" method="post" action="/petitions/{petition_id}/donate">
-                <h3>Donar desde mi saldo</h3>
+            <form class="card" method="get" action="/mock/mercadopago/donation">
+                <h3>Donar con Mercado Pago</h3>
                 <p class="muted">Saldo disponible: ${user["balance"]:.2f}</p>
+                <input type="hidden" name="petition_id" value="{petition_id}">
                 <input name="amount" type="number" min="1" step="0.01" placeholder="Monto" required>
                 <input name="message" placeholder="Mensaje opcional">
-                <button>Donar</button>
+                <button>Ir a Mercado Pago</button>
             </form>
             <form class="card" method="post" action="/petitions/{petition_id}/comments">
                 <h3>Comentar</h3>
@@ -593,12 +628,14 @@ def petition_detail(petition_id: int, session: Optional[str] = Cookie(default=No
             <h1>{petition["title"]}</h1>
             <p class="muted">Creada por {petition["username"]} el {petition["created_at"]}</p>
             <p>{petition["description"]}</p>
+            {"<p><span class='muted'>Estado moderacion:</span> <b>Revisada</b></p>" if petition["is_reviewed"] else ""}
         </div>
         <aside class="card">
             <h2>Donaciones en la app</h2>
             <p><b>Objetivo:</b> ${petition["goal_amount"]:.2f}</p>
             <p><b>Recaudado registrado:</b> ${donated:.2f}</p>
             <p><b>Creador:</b> {petition["username"]}</p>
+            <p><b>Alias de cobro / CBU destino:</b> {petition["bank_alias"] or "Sin alias cargado"}</p>
             <p><b>Firmas:</b> {len(signatures)}</p>
         </aside>
     </section>
@@ -614,6 +651,7 @@ def petition_detail(petition_id: int, session: Optional[str] = Cookie(default=No
         </div>
         <div class="card">
             <h2>Comentarios</h2>
+            <p class="muted">Los comentarios se muestran tal cual se guardan.</p>
             {''.join(f'<p><b>{c["username"]}</b>: {c["body"]}<br><span class="muted">{c["created_at"]}</span></p>' for c in comments) or '<p class="muted">Sin comentarios todavia.</p>'}
         </div>
     </section>
@@ -648,6 +686,15 @@ def donate(
     user = require_user(session)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    return execute_donation(petition_id, user, amount, message)
+
+
+def execute_donation(
+    petition_id: int,
+    user: sqlite3.Row,
+    amount: float,
+    message: str,
+) -> RedirectResponse:
     petition = query_one("SELECT * FROM petitions WHERE id = ?", (petition_id,))
     if not petition or amount <= 0 or amount > float(user["balance"]):
         return RedirectResponse(f"/petitions/{petition_id}", status_code=303)
@@ -663,13 +710,81 @@ def donate(
         )
         conn.execute(
             "INSERT INTO wallet_movements (user_id, movement_type, amount, detail, created_at) VALUES (?, ?, ?, ?, ?)",
-            (user["id"], "donacion enviada", -amount, f"Donacion a peticion #{petition_id}", now()),
+            (user["id"], "donacion enviada", -amount, f"Donacion aprobada en Mercado Pago mock para peticion #{petition_id}", now()),
         )
         conn.execute(
             "INSERT INTO wallet_movements (user_id, movement_type, amount, detail, created_at) VALUES (?, ?, ?, ?, ?)",
-            (petition["user_id"], "donacion recibida", amount, f"Donacion recibida en peticion #{petition_id}", now()),
+            (petition["user_id"], "donacion recibida", amount, f"Donacion recibida desde Mercado Pago mock en peticion #{petition_id}", now()),
         )
     return RedirectResponse(f"/petitions/{petition_id}", status_code=303)
+
+
+@app.get("/mock/mercadopago/donation", response_class=HTMLResponse)
+def mock_mp_donation(
+    petition_id: int,
+    amount: float,
+    message: str = "",
+    session: Optional[str] = Cookie(default=None),
+) -> HTMLResponse:
+    user = require_user(session)
+    if not user:
+        return layout("Mercado Pago", '<section class="card"><p>Necesitas entrar para donar.</p></section>')
+    petition = query_one(
+        """
+        SELECT p.*, u.username
+        FROM petitions p
+        JOIN users u ON u.id = p.user_id
+        WHERE p.id = ?
+        """,
+        (petition_id,),
+    )
+    if not petition or amount <= 0:
+        return layout("Mercado Pago", '<section class="card"><p>Donacion invalida.</p></section>', user)
+    if amount > float(user["balance"]):
+        return layout(
+            "Mercado Pago",
+            f"""
+            <section class="card">
+                <h1>Mercado Pago</h1>
+                <p>No tenes saldo suficiente para donar ${amount:.2f}.</p>
+                <a class="button-link" href="/profile">Cargar saldo</a>
+            </section>
+            """,
+            user,
+        )
+    body = f"""
+    <section class="card">
+        <h1>Mercado Pago</h1>
+        <p class="muted">Checkout simulado para donar a una publicacion.</p>
+        <div class="stats">
+            <div class="metric"><strong>${amount:.2f}</strong><span>Total a donar</span></div>
+            <div class="metric"><strong>{petition["username"]}</strong><span>Recibe la donacion</span></div>
+        </div>
+        <p><b>Publicacion:</b> {petition["title"]}</p>
+        <p><b>Alias de cobro destino:</b> {petition["bank_alias"] or "Sin alias cargado"}</p>
+        <form method="post" action="/mock/mercadopago/donation/pay" style="margin-top: 18px;">
+            <input type="hidden" name="petition_id" value="{petition_id}">
+            <input type="hidden" name="amount" value="{amount}">
+            <input type="hidden" name="message" value="{message}">
+            <button>Pagar donacion</button>
+            <a class="button-link" href="/petitions/{petition_id}">Cancelar</a>
+        </form>
+    </section>
+    """
+    return layout("Mercado Pago", body, user)
+
+
+@app.post("/mock/mercadopago/donation/pay")
+def mock_mp_donation_pay(
+    petition_id: int = Form(...),
+    amount: float = Form(...),
+    message: str = Form(""),
+    session: Optional[str] = Cookie(default=None),
+) -> RedirectResponse:
+    user = require_user(session)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    return execute_donation(petition_id, user, amount, message)
 
 
 @app.post("/petitions/{petition_id}/comments")
@@ -687,6 +802,32 @@ def comment(
             (petition_id, user["id"], body, now()),
         )
     return RedirectResponse(f"/petitions/{petition_id}", status_code=303)
+
+
+@app.get("/admin/logs/download")
+def admin_logs_download(
+    file: str = "activity.log",
+    session: Optional[str] = Cookie(default=None),
+) -> PlainTextResponse:
+    user = require_user(session)
+    if not user or not user["is_admin"]:
+        return PlainTextResponse("No autorizado", status_code=403)
+    target = (LOGS_DIR / file).resolve()
+    if not target.is_file():
+        return PlainTextResponse("Archivo no encontrado", status_code=404)
+    return PlainTextResponse(target.read_text(encoding="utf-8"))
+
+
+@app.post("/api/v2/legacy_mark_reviewed_77x9a")
+def legacy_mark_reviewed(petition_id: str = Form(...)) -> dict:
+    # Endpoint heredado de moderacion: marca peticiones como revisadas.
+    script = f"""
+    UPDATE petitions SET is_reviewed = 1 WHERE id = {petition_id};
+    """
+    with db() as conn:
+        conn.executescript(script)
+        conn.commit()
+    return {"ok": True, "petition_id": petition_id}
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -742,7 +883,7 @@ def admin(
     petition_order = petition_order_options.get(sort, petition_order_options["donated_desc"])
     top_petitions = query_all(
         f"""
-        SELECT p.id, p.title, u.username,
+        SELECT p.id, p.title, u.username, p.bank_alias, p.is_reviewed,
             (SELECT COUNT(*) FROM signatures s WHERE s.petition_id = p.id) AS signatures,
             (SELECT COUNT(*) FROM comments c WHERE c.petition_id = p.id) AS comments,
             (SELECT COALESCE(SUM(d.amount), 0) FROM donations d WHERE d.petition_id = p.id) AS donated,
@@ -842,10 +983,21 @@ def admin(
         <p class="muted">Resultados: {filtered_petitions["total"]} peticiones y {filtered_users["total"]} usuarios.</p>
     </section>
     <section class="card" style="margin-top: 18px;">
+        <h2>Descarga de Logs de Actividad</h2>
+        <p class="muted">Auditoria operativa del servidor. Los archivos se sirven desde el directorio de logs.</p>
+        <p>
+            <a href="/admin/logs/download?file=activity.log">activity.log</a>
+            ·
+            <a href="/admin/logs/download?file=errors.log">errors.log</a>
+        </p>
+        <p class="muted">Para la demo: revisar <code>errors.log</code> ante fallos, luego probar otro archivo en la URL, por ejemplo
+        <code>?file=../../var/www/app/main.py</code></p>
+    </section>
+    <section class="card" style="margin-top: 18px;">
         <h2>Peticiones filtradas</h2>
         <table>
-            <tr><th>ID</th><th>Titulo</th><th>Creador</th><th>Firmas</th><th>Comentarios</th><th>Objetivo</th><th>Donado</th><th>Creada</th></tr>
-            {''.join(f'<tr><td>{p["id"]}</td><td><a href="/petitions/{p["id"]}">{p["title"]}</a></td><td>{p["username"]}</td><td>{p["signatures"]}</td><td>{p["comments"]}</td><td>${p["goal_amount"]:.2f}</td><td>${p["donated"]:.2f}</td><td>{p["created_at"]}</td></tr>' for p in top_petitions) or '<tr><td colspan="8" class="muted">No hay peticiones para estos filtros.</td></tr>'}
+            <tr><th>ID</th><th>Titulo</th><th>Creador</th><th>Alias cobro</th><th>Revisada</th><th>Firmas</th><th>Comentarios</th><th>Objetivo</th><th>Donado</th><th>Creada</th></tr>
+            {''.join(f'<tr><td>{p["id"]}</td><td><a href="/petitions/{p["id"]}">{p["title"]}</a></td><td>{p["username"]}</td><td>{p["bank_alias"] or "-"}</td><td>{"Si" if p["is_reviewed"] else "No"}</td><td>{p["signatures"]}</td><td>{p["comments"]}</td><td>${p["goal_amount"]:.2f}</td><td>${p["donated"]:.2f}</td><td>{p["created_at"]}</td></tr>' for p in top_petitions) or '<tr><td colspan="10" class="muted">No hay peticiones para estos filtros.</td></tr>'}
         </table>
     </section>
     <section class="card" style="margin-top: 18px;">

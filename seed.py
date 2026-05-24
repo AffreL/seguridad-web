@@ -97,9 +97,9 @@ def seed() -> None:
                 conn,
                 "wallet_movements",
                 "user_id = ? AND movement_type = ? AND detail = ?",
-                (user_id, "carga inicial", f"Saldo inicial via alias {main.APP_DEPOSIT_ALIAS}"),
+                (user_id, "carga inicial", "Saldo inicial via Mercado Pago mock"),
                 "INSERT INTO wallet_movements (user_id, movement_type, amount, detail, created_at) VALUES (?, ?, ?, ?, ?)",
-                (user_id, "carga inicial", balance, f"Saldo inicial via alias {main.APP_DEPOSIT_ALIAS}", now_at("20")),
+                (user_id, "carga inicial", balance, "Saldo inicial via Mercado Pago mock", now_at("20")),
             )
 
         perros_id = get_or_create_petition(
