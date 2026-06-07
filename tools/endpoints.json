@@ -4,29 +4,29 @@
       "title": "Inyección SQL en endpoint heredado de moderación",
       "severity": "high",
       "confidence": "high",
-      "category": "Inyección SQL",
-      "evidence": "Función legacy_mark_reviewed construye un script SQL concatenando directamente el parámetro 'petition_id': script = f\"\"\"\n    UPDATE petitions SET is_reviewed = 1 WHERE id = {petition_id};\n    \"\"\" y luego lo ejecuta con conn.executescript(script). No hay sanitización ni parámetros preparados."
+      "category": "inyección SQL",
+      "evidence": "En /api/v2/legacy_mark_reviewed_77x9a el parámetro petition_id se inserta directamente en un script SQL: script = f\"\"\"\n    UPDATE petitions SET is_reviewed = 1 WHERE id = {petition_id};\n    \"\"\"; luego se ejecuta conn.executescript(script). Esto permite inyección SQL si petition_id contiene texto malicioso."
     },
     {
-      "title": "Lectura arbitraria de archivos por administrador (path traversal posible)",
+      "title": "Almacenamiento y reproducción de HTML no escapado (XSS reflejado/almacenado)",
       "severity": "medium",
       "confidence": "high",
-      "category": "Información sensible / Path traversal",
-      "evidence": "Endpoint /admin/logs/download recibe 'file' y calcula target = (BASE_DIR / file).resolve() luego sirve su contenido si es archivo. Aunque usa resolve(), la interfaz permite pasar rutas relativas como 'var/www/app/logs/errors.log' (ejemplo en la propia UI), y el comentario sugiere probar otros archivos (por ejemplo '?file=main.py'), lo que expone potencial para que un admin o un atacante con cookie de admin descargue archivos arbitrarios del repo."
+      "category": "Cross-Site Scripting (XSS)",
+      "evidence": "Varias vistas muestran contenido del usuario sin escape: en petition_detail se imprimen petition[\"title\"], petition[\"description\"], comments.body y signatures.signer_name directamente dentro del HTML. También layout inserta user[\"username\"] y user[\"balance\"] sin sanitizar."
     },
     {
-      "title": "Almacenamiento de contraseñas en texto plano",
-      "severity": "high",
-      "confidence": "high",
-      "category": "Mala gestión de credenciales",
-      "evidence": "Tabla users define 'password TEXT NOT NULL' y el código compara directamente en login: SELECT * FROM users WHERE username = ? AND password = ?. Además en init_db se inserta admin con contraseña 'admin' en texto claro."
-    },
-    {
-      "title": "Almacenamiento de archivos subidos sin validación de nombre ni tipo",
+      "title": "Descarga de archivos por ruta controlada (Path traversal posible)",
       "severity": "medium",
+      "confidence": "medium",
+      "category": "lectura de archivos arbitraria",
+      "evidence": "En /admin/logs/download el parámetro file se concatena con LOGS_DIR y se resuelve: target = (LOGS_DIR / file).resolve(); luego se verifica is_file() y se devuelve el contenido. Aunque se usa resolve(), no hay validación adicional del nombre ni restricción explícita contra rutas fuera del directorio si symlinks o manipulación del parámetro lo permiten."
+    },
+    {
+      "title": "Carga de archivos sin validación de nombre ni tipo",
+      "severity": "low",
       "confidence": "high",
-      "category": "Manejo inseguro de ficheros",
-      "evidence": "En create_petition se guarda el archivo subido con target = UPLOAD_DIR / f\"{secrets.token_hex(6)}_{photo.filename}\" y escribe bytes sin validar 'photo.filename' ni tipo MIME. Esto puede permitir nombres problemáticos o extensiones peligrosas y servirlos estáticamente vía /uploads."
+      "category": "gestión insegura de archivos",
+      "evidence": "En create_petition el archivo subido se guarda con el nombre original concatenado: target = UPLOAD_DIR / f\"{secrets.token_hex(6)}_{photo.filename}\"; no hay normalización ni comprobación del nombre, ni validación del contenido más allá del accept en el formulario, lo que puede permitir nombres con rutas o extensiones peligrosas o archivos maliciosos."
     }
   ]
 }

@@ -1,5 +1,4 @@
 from datetime import datetime
-import math
 from pathlib import Path
 import secrets
 import sqlite3
@@ -294,7 +293,6 @@ def home(session: Optional[str] = Cookie(default=None)) -> HTMLResponse:
             (SELECT COALESCE(SUM(d.amount), 0) FROM donations d WHERE d.petition_id = p.id) AS donated
         FROM petitions p
         JOIN users u ON u.id = p.user_id
-        WHERE p.is_reviewed = 1
         ORDER BY p.id DESC
         """
     )
@@ -529,9 +527,8 @@ def new_petition_form(session: Optional[str] = Cookie(default=None)) -> HTMLResp
                 <textarea name="description" placeholder="Descripcion de la causa" required></textarea>
                 <input name="goal_amount" type="number" min="0" step="0.01" placeholder="Objetivo de recaudacion" value="0">
                 <input name="photo" type="file" accept="image/*">
-                <button>Enviar a revision</button>
+                <button>Publicar</button>
             </form>
-            <p class="muted">La solicitud se publicara cuando un administrador la apruebe.</p>
         </section>
         """,
         user,
@@ -559,8 +556,8 @@ async def create_petition(
     with db() as conn:
         cursor = conn.execute(
             """
-            INSERT INTO petitions (user_id, title, description, bank_alias, is_reviewed, photo_path, goal_amount, created_at)
-            VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+            INSERT INTO petitions (user_id, title, description, bank_alias, photo_path, goal_amount, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (user["id"], title, description, "", photo_path, goal_amount, now()),
         )
@@ -582,9 +579,6 @@ def petition_detail(petition_id: int, session: Optional[str] = Cookie(default=No
     )
     if not petition:
         return layout("No encontrada", '<section class="card"><h1>Peticion no encontrada</h1></section>', user)
-    can_review_pending = user and (user["id"] == petition["user_id"] or user["is_admin"])
-    if not petition["is_reviewed"] and not can_review_pending:
-        return layout("No encontrada", '<section class="card"><h1>Peticion no encontrada</h1></section>', user, status_code=404)
 
     signatures = query_all("SELECT * FROM signatures WHERE petition_id = ? ORDER BY id DESC", (petition_id,))
     donations = query_all("SELECT * FROM donations WHERE petition_id = ? ORDER BY id DESC", (petition_id,))
@@ -599,24 +593,6 @@ def petition_detail(petition_id: int, session: Optional[str] = Cookie(default=No
         (petition_id,),
     )
     donated = sum(float(d["amount"]) for d in donations)
-    donation_form = (
-        f"""
-        <form class="card" method="post" action="/petitions/{petition_id}/donate">
-            <h3>Donar desde mi saldo</h3>
-            <p class="muted">Saldo disponible: ${user["balance"]:.2f}</p>
-            <input name="amount" type="number" min="1" step="0.01" placeholder="Monto" required>
-            <input name="message" placeholder="Mensaje opcional">
-            <button>Donar</button>
-        </form>
-        """
-        if user and user["id"] != petition["user_id"]
-        else """
-        <section class="card">
-            <h3>Donar desde mi saldo</h3>
-            <p class="muted">No podes donar a tu propia publicacion.</p>
-        </section>
-        """
-    )
     auth_forms = (
         f"""
         <div class="grid">
@@ -625,7 +601,14 @@ def petition_detail(petition_id: int, session: Optional[str] = Cookie(default=No
                 <input name="signer_name" placeholder="Nombre para mostrar" value="{user["username"]}" required>
                 <button>Firmar peticion</button>
             </form>
-            {donation_form}
+            <form class="card" method="get" action="/mock/mercadopago/donation">
+                <h3>Donar con Mercado Pago</h3>
+                <p class="muted">Saldo disponible: ${user["balance"]:.2f}</p>
+                <input type="hidden" name="petition_id" value="{petition_id}">
+                <input name="amount" type="number" min="1" step="0.01" placeholder="Monto" required>
+                <input name="message" placeholder="Mensaje opcional">
+                <button>Ir a Mercado Pago</button>
+            </form>
             <form class="card" method="post" action="/petitions/{petition_id}/comments">
                 <h3>Comentar</h3>
                 <textarea name="body" placeholder="Comentario" required></textarea>
@@ -636,13 +619,6 @@ def petition_detail(petition_id: int, session: Optional[str] = Cookie(default=No
         if user
         else '<section class="card"><p><a href="/login">Entra</a> para firmar, donar o comentar.</p></section>'
     )
-    if not petition["is_reviewed"]:
-        auth_forms = """
-        <section class="card">
-            <h3>Solicitud pendiente de revision</h3>
-            <p class="muted">Todavia no esta publicada. No puede recibir firmas, comentarios ni donaciones.</p>
-        </section>
-        """
     body = f"""
     <section class="hero">
         <div>
@@ -650,7 +626,7 @@ def petition_detail(petition_id: int, session: Optional[str] = Cookie(default=No
             <h1>{petition["title"]}</h1>
             <p class="muted">Creada por {petition["username"]} el {petition["created_at"]}</p>
             <p>{petition["description"]}</p>
-            <p><span class="muted">Estado moderacion:</span> <b>{"Publicada" if petition["is_reviewed"] else "Pendiente de revision"}</b></p>
+            {"<p><span class='muted'>Estado moderacion:</span> <b>Revisada</b></p>" if petition["is_reviewed"] else ""}
         </div>
         <aside class="card">
             <h2>Donaciones en la app</h2>
@@ -691,9 +667,6 @@ def sign_petition(
     if not user:
         return RedirectResponse("/login", status_code=303)
     with db() as conn:
-        petition = conn.execute("SELECT is_reviewed FROM petitions WHERE id = ?", (petition_id,)).fetchone()
-        if not petition or not petition["is_reviewed"]:
-            return RedirectResponse(f"/petitions/{petition_id}", status_code=303)
         conn.execute(
             "INSERT INTO signatures (petition_id, user_id, signer_name, created_at) VALUES (?, ?, ?, ?)",
             (petition_id, user["id"], signer_name, now()),
@@ -720,21 +693,11 @@ def execute_donation(
     amount: float,
     message: str,
 ) -> RedirectResponse:
-    if not math.isfinite(amount) or amount <= 0:
+    petition = query_one("SELECT * FROM petitions WHERE id = ?", (petition_id,))
+    if not petition or amount <= 0 or amount > float(user["balance"]):
         return RedirectResponse(f"/petitions/{petition_id}", status_code=303)
-
     with db() as conn:
-        petition = conn.execute("SELECT * FROM petitions WHERE id = ?", (petition_id,)).fetchone()
-        if not petition or not petition["is_reviewed"] or petition["user_id"] == user["id"]:
-            return RedirectResponse(f"/petitions/{petition_id}", status_code=303)
-
-        debit = conn.execute(
-            "UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?",
-            (amount, user["id"], amount),
-        )
-        if debit.rowcount != 1:
-            return RedirectResponse(f"/petitions/{petition_id}", status_code=303)
-
+        conn.execute("UPDATE users SET balance = balance - ? WHERE id = ?", (amount, user["id"]))
         conn.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (amount, petition["user_id"]))
         conn.execute(
             """
@@ -745,13 +708,81 @@ def execute_donation(
         )
         conn.execute(
             "INSERT INTO wallet_movements (user_id, movement_type, amount, detail, created_at) VALUES (?, ?, ?, ?, ?)",
-            (user["id"], "donacion enviada", -amount, f"Donacion enviada desde saldo interno a peticion #{petition_id}", now()),
+            (user["id"], "donacion enviada", -amount, f"Donacion aprobada en Mercado Pago mock para peticion #{petition_id}", now()),
         )
         conn.execute(
             "INSERT INTO wallet_movements (user_id, movement_type, amount, detail, created_at) VALUES (?, ?, ?, ?, ?)",
-            (petition["user_id"], "donacion recibida", amount, f"Donacion recibida en saldo interno desde peticion #{petition_id}", now()),
+            (petition["user_id"], "donacion recibida", amount, f"Donacion recibida desde Mercado Pago mock en peticion #{petition_id}", now()),
         )
     return RedirectResponse(f"/petitions/{petition_id}", status_code=303)
+
+
+@app.get("/mock/mercadopago/donation", response_class=HTMLResponse)
+def mock_mp_donation(
+    petition_id: int,
+    amount: float,
+    message: str = "",
+    session: Optional[str] = Cookie(default=None),
+) -> HTMLResponse:
+    user = require_user(session)
+    if not user:
+        return layout("Mercado Pago", '<section class="card"><p>Necesitas entrar para donar.</p></section>')
+    petition = query_one(
+        """
+        SELECT p.*, u.username
+        FROM petitions p
+        JOIN users u ON u.id = p.user_id
+        WHERE p.id = ?
+        """,
+        (petition_id,),
+    )
+    if not petition or amount <= 0:
+        return layout("Mercado Pago", '<section class="card"><p>Donacion invalida.</p></section>', user)
+    if amount > float(user["balance"]):
+        return layout(
+            "Mercado Pago",
+            f"""
+            <section class="card">
+                <h1>Mercado Pago</h1>
+                <p>No tenes saldo suficiente para donar ${amount:.2f}.</p>
+                <a class="button-link" href="/profile">Cargar saldo</a>
+            </section>
+            """,
+            user,
+        )
+    body = f"""
+    <section class="card">
+        <h1>Mercado Pago</h1>
+        <p class="muted">Checkout simulado para donar a una publicacion.</p>
+        <div class="stats">
+            <div class="metric"><strong>${amount:.2f}</strong><span>Total a donar</span></div>
+            <div class="metric"><strong>{petition["username"]}</strong><span>Recibe la donacion</span></div>
+        </div>
+        <p><b>Publicacion:</b> {petition["title"]}</p>
+        <p><b>Alias de cobro destino:</b> {petition["bank_alias"] or "Sin alias cargado"}</p>
+        <form method="post" action="/mock/mercadopago/donation/pay" style="margin-top: 18px;">
+            <input type="hidden" name="petition_id" value="{petition_id}">
+            <input type="hidden" name="amount" value="{amount}">
+            <input type="hidden" name="message" value="{message}">
+            <button>Pagar donacion</button>
+            <a class="button-link" href="/petitions/{petition_id}">Cancelar</a>
+        </form>
+    </section>
+    """
+    return layout("Mercado Pago", body, user)
+
+
+@app.post("/mock/mercadopago/donation/pay")
+def mock_mp_donation_pay(
+    petition_id: int = Form(...),
+    amount: float = Form(...),
+    message: str = Form(""),
+    session: Optional[str] = Cookie(default=None),
+) -> RedirectResponse:
+    user = require_user(session)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    return execute_donation(petition_id, user, amount, message)
 
 
 @app.post("/petitions/{petition_id}/comments")
@@ -764,9 +795,6 @@ def comment(
     if not user:
         return RedirectResponse("/login", status_code=303)
     with db() as conn:
-        petition = conn.execute("SELECT is_reviewed FROM petitions WHERE id = ?", (petition_id,)).fetchone()
-        if not petition or not petition["is_reviewed"]:
-            return RedirectResponse(f"/petitions/{petition_id}", status_code=303)
         conn.execute(
             "INSERT INTO comments (petition_id, user_id, body, created_at) VALUES (?, ?, ?, ?)",
             (petition_id, user["id"], body, now()),
@@ -776,29 +804,16 @@ def comment(
 
 @app.get("/admin/logs/download")
 def admin_logs_download(
-    file: str = "var/www/app/logs/activity.log",
+    file: str = "activity.log",
     session: Optional[str] = Cookie(default=None),
 ) -> PlainTextResponse:
     user = require_user(session)
     if not user or not user["is_admin"]:
         return PlainTextResponse("No autorizado", status_code=403)
-    target = (BASE_DIR / file).resolve()
+    target = (LOGS_DIR / file).resolve()
     if not target.is_file():
         return PlainTextResponse("Archivo no encontrado", status_code=404)
     return PlainTextResponse(target.read_text(encoding="utf-8"))
-
-
-@app.post("/admin/petitions/{petition_id}/approve")
-def approve_petition(
-    petition_id: int,
-    session: Optional[str] = Cookie(default=None),
-) -> RedirectResponse:
-    user = require_user(session)
-    if not user or not user["is_admin"]:
-        return RedirectResponse("/admin", status_code=303)
-    with db() as conn:
-        conn.execute("UPDATE petitions SET is_reviewed = 1 WHERE id = ?", (petition_id,))
-    return RedirectResponse("/admin", status_code=303)
 
 
 @app.post("/api/v2/legacy_mark_reviewed_77x9a")
@@ -822,9 +837,7 @@ def admin(
     sort: str = "donated_desc",
     user_role: str = "all",
 ) -> HTMLResponse:
-    print(session)
     user = require_user(session)
-    print(user)
     if not user:
         return layout("Admin", '<section class="card"><p>Necesitas entrar como admin.</p></section>')
     if not user["is_admin"]:
@@ -835,8 +848,6 @@ def admin(
         SELECT
             (SELECT COUNT(*) FROM users) AS users,
             (SELECT COUNT(*) FROM petitions) AS petitions,
-            (SELECT COUNT(*) FROM petitions WHERE is_reviewed = 1) AS published_petitions,
-            (SELECT COUNT(*) FROM petitions WHERE is_reviewed = 0) AS pending_petitions,
             (SELECT COUNT(*) FROM signatures) AS signatures,
             (SELECT COUNT(*) FROM comments) AS comments,
             (SELECT COUNT(*) FROM donations) AS donations,
@@ -844,15 +855,6 @@ def admin(
             (SELECT COALESCE(SUM(balance), 0) FROM users) AS app_balance,
             (SELECT COUNT(*) FROM withdrawals) AS withdrawals,
             (SELECT COALESCE(SUM(amount), 0) FROM withdrawals) AS withdrawn
-        """
-    )
-    pending_petitions = query_all(
-        """
-        SELECT p.id, p.title, p.description, p.goal_amount, p.created_at, u.username
-        FROM petitions p
-        JOIN users u ON u.id = p.user_id
-        WHERE p.is_reviewed = 0
-        ORDER BY p.id ASC
         """
     )
     petition_filters = []
@@ -930,8 +932,7 @@ def admin(
         <h1>Panel administrador</h1>
         <div class="stats">
             <div class="metric"><strong>{totals["users"]}</strong><span>Usuarios</span></div>
-            <div class="metric"><strong>{totals["published_petitions"]}</strong><span>Publicadas</span></div>
-            <div class="metric"><strong>{totals["pending_petitions"]}</strong><span>Pendientes</span></div>
+            <div class="metric"><strong>{totals["petitions"]}</strong><span>Peticiones</span></div>
             <div class="metric"><strong>{totals["signatures"]}</strong><span>Firmas</span></div>
             <div class="metric"><strong>{totals["donations"]}</strong><span>Donaciones</span></div>
             <div class="metric"><strong>${totals["donated"]:.2f}</strong><span>Total registrado</span></div>
@@ -939,14 +940,6 @@ def admin(
             <div class="metric"><strong>${totals["app_balance"]:.2f}</strong><span>Saldo en app</span></div>
             <div class="metric"><strong>${totals["withdrawn"]:.2f}</strong><span>Retirado</span></div>
         </div>
-    </section>
-    <section class="card" style="margin-top: 18px;">
-        <h2>Solicitudes pendientes de revision</h2>
-        <p class="muted">Estas solicitudes no aparecen publicamente hasta que un administrador las apruebe.</p>
-        <table>
-            <tr><th>ID</th><th>Titulo</th><th>Creador</th><th>Descripcion</th><th>Objetivo</th><th>Creada</th><th>Accion</th></tr>
-            {''.join(f'<tr><td>{p["id"]}</td><td><a href="/petitions/{p["id"]}">{p["title"]}</a></td><td>{p["username"]}</td><td>{p["description"][:180]}</td><td>${p["goal_amount"]:.2f}</td><td>{p["created_at"]}</td><td><form method="post" action="/admin/petitions/{p["id"]}/approve"><button>Aprobar y publicar</button></form></td></tr>' for p in pending_petitions) or '<tr><td colspan="7" class="muted">No hay solicitudes pendientes.</td></tr>'}
-        </table>
     </section>
     <section class="card" style="margin-top: 18px;">
         <h2>Filtros</h2>
@@ -991,13 +984,10 @@ def admin(
         <h2>Descarga de Logs de Actividad</h2>
         <p class="muted">Auditoria operativa del servidor. Los archivos se sirven desde el directorio de logs.</p>
         <p>
-            <a href="/admin/logs/download?file=var/www/app/logs/activity.log">var/www/app/logs/activity.log</a>
+            <a href="/admin/logs/download?file=activity.log">activity.log</a>
             ·
-            <a href="/admin/logs/download?file=var/www/app/logs/errors.log">var/www/app/logs/errors.log</a>
+            <a href="/admin/logs/download?file=errors.log">errors.log</a>
         </p>
-        <p class="muted">La URL muestra la ruta relativa a la raiz de la app. Para la demo: revisar
-        <code>var/www/app/logs/errors.log</code> ante fallos, luego probar otro archivo, por ejemplo
-        <code>?file=main.py</code></p>
     </section>
     <section class="card" style="margin-top: 18px;">
         <h2>Peticiones filtradas</h2>
