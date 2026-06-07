@@ -823,9 +823,9 @@ def legacy_mark_reviewed(petition_id: str = Form(...)) -> dict:
     UPDATE petitions SET is_reviewed = 1 WHERE id = {petition_id};
     """
     with db() as conn:
-        result = conn.executescript(script)
+        conn.executescript(script)
         conn.commit()
-    return {"ok": result is not None, "petition_id": petition_id, "petition": dict(result) if result else None}
+    return {"ok": True, "petition_id": petition_id}
 
 
 @app.get("/admin", response_class=HTMLResponse)

