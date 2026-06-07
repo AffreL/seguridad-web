@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 donaciones.db
 .DS_Store
+.env.inspector

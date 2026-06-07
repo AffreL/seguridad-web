@@ -50,11 +50,35 @@ Usuario administrador:
 
 La app usa dinero simulado dentro de SQLite. Para cargar saldo, entrar a `Mi perfil` y usar el boton mockeado de Mercado Pago.
 
-Desde el perfil tambien se puede retirar saldo indicando un alias propio. Las donaciones abren un checkout mockeado de Mercado Pago, descuentan saldo del donante y acreditan al creador de la publicacion.
+Desde el perfil tambien se puede retirar saldo indicando un alias propio. Las donaciones transfieren directamente saldo interno del donante al creador de la publicacion.
 
 Cada peticion muestra el **alias de cobro / CBU destino** (`bank_alias`) para ver el impacto del desvio de fondos.
 
 > No usar en produccion. La app evita protecciones habituales a proposito para que sea facil inspeccionar y probar.
+
+## Inspector de vulnerabilidades con OpenAI
+
+1. Crear `.env.inspector` a partir de `.env.inspector.example` y completar `OPENAI_API_KEY`.
+2. Pegar un unico archivo `.txt` dentro de `tools/`.
+3. Ejecutar:
+
+```bash
+python tools/vulnerability_inspector.py
+```
+
+El inspector envia el contenido del `.txt` a OpenAI, imprime el JSON y lo guarda junto
+al archivo original. Por ejemplo, `tools/endpoints.txt` genera `tools/endpoints.json`.
+Para indicar un archivo concreto:
+
+```bash
+python tools/vulnerability_inspector.py --input tools/endpoints.txt
+```
+
+Para indicar otro nombre de salida:
+
+```bash
+python tools/vulnerability_inspector.py --output tools/reporte.json
+```
 
 ---
 
@@ -84,11 +108,11 @@ Documento completo del TP: [trabajo-practico-cuatrimestral.md](trabajo-practico-
 ### Paso 3 — Path traversal y reconocimiento
 
 1. En `/admin`, seccion **Descarga de Logs de Actividad**.
-2. Descargar `errors.log` y buscar la ruta `/var/www/app/main.py` en el traceback.
+2. Descargar `var/www/app/logs/errors.log` y buscar la ruta `/var/www/app/main.py` en el traceback.
 3. En la barra de direcciones, cambiar el parametro a:
 
 ```text
-/admin/logs/download?file=../../var/www/app/main.py
+/admin/logs/download?file=main.py
 ```
 
 4. Buscar en el codigo el endpoint `POST /api/v2/legacy_mark_reviewed_77x9a`.

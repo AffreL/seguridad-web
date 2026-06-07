@@ -15,4 +15,10 @@ FileNotFoundError: [Errno 2] No such file or directory: '/var/www/app/logs/missi
 Server: uvicorn
 Framework: FastAPI 0.110.0
 Python: 3.12.3
-Database: sqlite3 (/var/www/app/donaciones.db)
+Database engine: SQLite
+Database driver: Python sqlite3
+Database file: /var/www/app/donaciones.db
+
+2026-05-18 10:53:18 ERROR database health check failed
+sqlite3.OperationalError: database is locked
+SQLite connection target: /var/www/app/donaciones.db
